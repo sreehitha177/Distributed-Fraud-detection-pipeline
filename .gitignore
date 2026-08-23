@@ -1,0 +1,29 @@
+# Python environments and caches
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+
+# IDE and operating-system files
+.idea/
+.vscode/
+.DS_Store
+
+# Local configuration and secrets
+.env
+.env.*
+
+# Generated datasets and Spark output
+ml_model/creditcard.csv
+ml_model/*.csv/
+ml_model/*.parquet/
+ml_model/balanced_*/
+ml_model/testdata*/
+ml_model/validationdata*/
+
+# Generated model artifacts
+ml_model/trained_model*/
+
+# Logs and temporary files
+*.log
+*.tmp
