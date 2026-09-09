@@ -19,7 +19,7 @@ MODEL_PATH = BASE_DIR / "trained_model_v3"
 VALIDATION_DATA_PATH = BASE_DIR / "validationdata_v3.parquet"
 TEST_DATA_PATH = BASE_DIR / "testdata_v3.parquet"
 
-FEATURE_COLUMNS = [f"V{i}" for i in range(1, 29)] + ["Time", "Amount"]
+FEATURE_COLUMNS = ["Time"] + [f"V{i}" for i in range(1, 29)] + ["Amount"]
 
 REQUIRED_COLUMNS = (
         ["Time"]
@@ -31,9 +31,10 @@ REQUIRED_COLUMNS = (
 # Function to create a Spark session
 def create_spark_session():
     """Initialize and return a Spark session."""
-    return SparkSession.builder \
-        .appName("CreditCardFraudDetection") \
-        .master("local[*]").getOrCreate()
+    return (SparkSession.builder
+        .appName("CreditCardFraudDetection")
+        .master("local[*]")
+        .getOrCreate())
 
 # Function to load dataset from a CSV file into a Spark DataFrame
 def load_data(spark, file_path):
@@ -150,10 +151,10 @@ def train(file_path):
 
 # Function to save the trained model to the specified path
 def save_model(model, model_path):
-    """Save the trained model to the given path."""
+    """Save the trained model, replacing any previous model at this path."""
     start_time = time.time()
 
-    model.save(str(model_path))
+    model.write().overwrite().save(str(model_path))
 
     print(
         f"Model saved to: {model_path}"
@@ -165,10 +166,10 @@ def save_model(model, model_path):
 
 # Function to save the test data to a specified Parquet path
 def save_test_data(test_data, test_data_path):
-    """Save the test data to the specified path in Parquet format."""
+    """Save split data as Parquet, replacing the previous output at this path."""
     start_time = time.time()
 
-    test_data.write.parquet(str(test_data_path))
+    test_data.write.mode("overwrite").parquet(str(test_data_path))
 
     print(
         f"Test data saved to: {test_data_path}"
