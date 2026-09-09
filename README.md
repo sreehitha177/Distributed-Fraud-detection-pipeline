@@ -15,6 +15,13 @@
 - To run spark-Consumer - ```spark-submit --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.4.4 consumer.py```
 5. Verify Output: The consumer will process the tasks produced by the producer and print the results to the console.
 
+
+## Dataset
+
+Download the [Credit Card Fraud Detection dataset from Kaggle](https://www.kaggle.com/datasets/mlg-ulb/creditcardfraud) and extract `creditcard.csv` into the `ml_model/` directory. The dataset is excluded from Git; each user downloads it locally.
+
+Run training from the repository root with `python ml_model/train.py`.
+
 ## Experimentation and Test Cases
 
 1. Test Random Forest Model: Evaluate the model's accuracy and performance using different datasets. Experiment with hyperparameter tuning and feature importance to improve detection efficiency.
