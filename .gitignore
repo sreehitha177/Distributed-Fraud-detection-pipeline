@@ -23,8 +23,13 @@ ml_model/testdata*/
 ml_model/validationdata*/
 
 # Generated model artifacts
+/ml_model/old model/
+/ml_model/runs/
 ml_model/trained_model*/
+ml_model/threshold_v*.json
+ml_model/threshold_metrics_v*.csv
 
 # Logs and temporary files
+/kafka_stream/runtime/
 *.log
 *.tmp

@@ -1,14 +1,25 @@
+import argparse
+import math
 from pathlib import Path
 
-from pyspark.ml.classification import RandomForestClassificationModel
 from pyspark.ml.evaluation import BinaryClassificationEvaluator
-from pyspark.ml.feature import VectorAssembler
 from pyspark.ml.functions import vector_to_array
 from pyspark.sql import functions as F
-from pyspark.sql.functions import col
-from pyspark.sql.types import DoubleType
 
-from train import create_spark_session
+if __package__:
+    from .model_utils import (
+        get_classifier, get_feature_columns, load_fraud_model, load_run_manifest,
+        transform_model, validate_run_model,
+    )
+    from .train import FEATURE_COLUMNS, create_spark_session, validate_data
+    from .tune_threshold import THRESHOLD_PATH, load_selected_threshold
+else:
+    from model_utils import (
+        get_classifier, get_feature_columns, load_fraud_model, load_run_manifest,
+        transform_model, validate_run_model,
+    )
+    from train import FEATURE_COLUMNS, create_spark_session, validate_data
+    from tune_threshold import THRESHOLD_PATH, load_selected_threshold
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -16,15 +27,13 @@ BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = BASE_DIR / "trained_model_v3"
 TEST_DATA_PATH = BASE_DIR / "testdata_v3.parquet"
 
-FEATURE_COLUMNS = [f"V{i}" for i in range(1, 29)] + ["Time", "Amount"]
-
 THRESHOLD = 0.50
 
 
 def load_model(model_path):
-    """Load the trained Random Forest model."""
+    """Load a legacy forest or its saved preprocessing pipeline."""
 
-    model = RandomForestClassificationModel.load(str(model_path))
+    model = load_fraud_model(model_path)
 
     print(f"Model loaded from {model_path}")
 
@@ -32,22 +41,11 @@ def load_model(model_path):
 
 
 def load_test_data(test_data_path, spark):
-    """Load and prepare test data."""
+    """Load the saved test split without changing its numeric schema."""
 
     test_data = spark.read.parquet(str(test_data_path))
 
     print(f"Test data loaded from {test_data_path}")
-
-    columns_to_cast = (
-            [f"V{i}" for i in range(1, 29)]
-            + ["Time", "Amount", "Class"]
-    )
-
-    for column_name in columns_to_cast:
-        test_data = test_data.withColumn(
-            column_name,
-            col(column_name).cast(DoubleType())
-        )
 
     return test_data
 
@@ -67,25 +65,18 @@ def evaluate_model(
     using the provided threshold.
     """
 
-    assembler = VectorAssembler(
-        inputCols=input_cols,
-        outputCol="features"
-    )
-
-    processed_test_data = (
-        assembler
-        .transform(test_data)
-        .select("features", "Class")
-    )
-
-    predictions = model.transform(processed_test_data)
+    if not math.isfinite(threshold) or not 0 <= threshold <= 1:
+        raise ValueError("Threshold must be finite and between 0 and 1")
+    validated = validate_data(test_data, dataset_name="Test data")
+    classifier = get_classifier(model)
+    predictions = transform_model(model, validated.select(*input_cols, "Class"), input_cols)
 
     # Extract fraud probability:
     # probability[0] = legitimate
     # probability[1] = fraud
     predictions = predictions.withColumn(
         "fraud_probability",
-        vector_to_array("probability")[1]
+        vector_to_array(classifier.getProbabilityCol())[1]
     )
 
     # Apply our custom threshold
@@ -146,7 +137,7 @@ def evaluate_model(
 
     auprc_evaluator = BinaryClassificationEvaluator(
         labelCol="Class",
-        rawPredictionCol="rawPrediction",
+        rawPredictionCol=classifier.getRawPredictionCol(),
         metricName="areaUnderPR"
     )
 
@@ -159,7 +150,7 @@ def evaluate_model(
     print("\nFINAL TEST EVALUATION")
     print("---------------------")
 
-    print(f"Threshold: {threshold:.2f}")
+    print(f"Threshold: {threshold:.12g}")
 
     print("\nConfusion Matrix")
     print("----------------")
@@ -222,24 +213,64 @@ def evaluate_incrementally(
         print(f"F1:       {f1:.4f}")
 
 
-def main():
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Evaluate the saved model with its validation-selected threshold.")
+    parser.add_argument("--run-dir", type=Path, help="Completed training run containing model, test.parquet and threshold.json")
+    parser.add_argument("--threshold", type=float, help="Explicit override; otherwise use saved threshold (legacy fallback: 0.5)")
+    parser.add_argument("--threshold-file", type=Path, help="Load a specific threshold JSON (default: threshold_v3.json)")
+    parser.add_argument("--master", default="local[*]", help="Spark master, for example local[2]")
+    args = parser.parse_args(argv)
+    if args.threshold is not None and (not math.isfinite(args.threshold) or not 0 <= args.threshold <= 1):
+        parser.error("--threshold must be finite and between 0 and 1")
+    if args.threshold is not None and args.threshold_file is not None:
+        parser.error("Use either --threshold or --threshold-file")
+    args.model_path = args.run_dir / "model" if args.run_dir is not None else MODEL_PATH
+    args.test_data_path = args.run_dir / "test.parquet" if args.run_dir is not None else TEST_DATA_PATH
+    args.threshold_path = (
+        args.threshold_file if args.threshold_file is not None
+        else args.run_dir / "threshold.json" if args.run_dir is not None
+        else THRESHOLD_PATH
+    )
+    return args
 
-    spark = create_spark_session()
+
+def main():
+    args = parse_args()
+    manifest = load_run_manifest(args.run_dir) if args.run_dir is not None else None
+    if (args.threshold is None
+            and (args.run_dir is not None or args.threshold_file is not None)
+            and not args.threshold_path.is_file()):
+        raise ValueError(f"Selected threshold file is missing: {args.threshold_path}")
+    spark = create_spark_session(master=args.master)
 
     try:
 
-        model = load_model(MODEL_PATH)
+        model = load_model(args.model_path)
+        feature_columns = get_feature_columns(model, FEATURE_COLUMNS)
+        if manifest is not None:
+            feature_columns = validate_run_model(manifest, model, FEATURE_COLUMNS)
+
+        threshold_path = args.threshold_path
+        if args.threshold is not None:
+            threshold = args.threshold
+            print("Using explicit threshold override")
+        elif args.threshold_file is not None or threshold_path.exists():
+            threshold = load_selected_threshold(threshold_path, get_classifier(model).uid, feature_columns)
+            print(f"Using validation-selected threshold from {threshold_path}")
+        else:
+            threshold = THRESHOLD
+            print(f"No saved threshold found; using default {THRESHOLD}. Run tune_threshold.py to tune on validation data.")
 
         test_data = load_test_data(
-            TEST_DATA_PATH,
+            args.test_data_path,
             spark
         )
 
         evaluate_model(
             model=model,
             test_data=test_data,
-            input_cols=FEATURE_COLUMNS,
-            threshold=THRESHOLD
+            input_cols=feature_columns,
+            threshold=threshold
         )
 
     finally:
